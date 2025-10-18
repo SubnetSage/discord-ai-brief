@@ -30,9 +30,9 @@ serve(async (req) => {
     const DISCORD_TOKEN = Deno.env.get('DISCORD_TOKEN');
     const SUMMARY_CHANNEL_ID = Deno.env.get('SUMMARY_CHANNEL_ID');
     const CHANNEL_IDS = Deno.env.get('CHANNEL_IDS');
-    const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
+    const GOOGLE_API_KEY = Deno.env.get('GOOGLE_API_KEY');
 
-    if (!DISCORD_TOKEN || !SUMMARY_CHANNEL_ID || !CHANNEL_IDS || !LOVABLE_API_KEY) {
+    if (!DISCORD_TOKEN || !SUMMARY_CHANNEL_ID || !CHANNEL_IDS || !GOOGLE_API_KEY) {
       throw new Error('Missing required environment variables');
     }
 
@@ -117,9 +117,9 @@ serve(async (req) => {
 
     console.log(`Successfully scraped ${articles.length} articles`);
 
-    // Generate summary using Lovable AI
+    // Generate summary using Google Gemini
     console.log('Generating AI summary...');
-    const summary = await generateSummary(articles, LOVABLE_API_KEY);
+    const summary = await generateSummary(articles, GOOGLE_API_KEY);
 
     // Post to Discord
     await postToDiscord(DISCORD_TOKEN, SUMMARY_CHANNEL_ID, summary);
@@ -232,26 +232,37 @@ Create a Markdown summary with this exact structure:
 Use concrete facts, no hype. Be specific about numbers, companies, and products.`;
 
   try {
-    const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
-        messages: [
-          { role: 'user', content: prompt }
-        ],
-      }),
-    });
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: prompt
+            }]
+          }],
+          generationConfig: {
+            temperature: 0.7,
+            topK: 40,
+            topP: 0.95,
+            maxOutputTokens: 8192,
+          }
+        }),
+      }
+    );
 
     if (!response.ok) {
-      throw new Error(`AI API error: ${response.status}`);
+      const errorText = await response.text();
+      console.error('Google API error:', errorText);
+      throw new Error(`Google API error: ${response.status}`);
     }
 
     const data = await response.json();
-    return data.choices[0].message.content;
+    return data.candidates[0].content.parts[0].text;
   } catch (error) {
     console.error('Error generating summary:', error);
     throw error;
