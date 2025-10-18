@@ -1,73 +1,178 @@
-# Welcome to your Lovable project
+# Discord AI Daily - TypeScript Edition
 
-## Project info
+A TypeScript/React web application that automatically generates AI-powered daily news summaries from Discord channels.
 
-**URL**: https://lovable.dev/projects/bca520c8-81ba-4f1f-ac37-bd8c0c5d32d3
+## Features
 
-## How can I edit this code?
+- 🤖 **AI-Powered Summaries**: Uses Lovable AI (Google Gemini 2.5 Flash) to generate comprehensive news briefs
+- 📱 **Discord Integration**: Scans specified Discord channels for daily content
+- 🔗 **Smart URL Extraction**: Finds and deduplicates URLs from messages and embeds
+- 📝 **Structured Output**: Generates organized Markdown summaries with sections for launches, research, funding, and more
+- 🌐 **Web Dashboard**: Modern React UI to trigger summaries and view status
+- ☁️ **Lovable Cloud Backend**: Serverless edge functions for all backend logic
 
-There are several ways of editing your application.
+## Architecture
 
-**Use Lovable**
+### Frontend
+- **Framework**: React 18 + TypeScript
+- **Styling**: Tailwind CSS + shadcn/ui components
+- **Build**: Vite
+- **State**: React Query for server state
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/bca520c8-81ba-4f1f-ac37-bd8c0c5d32d3) and start prompting.
+### Backend
+- **Runtime**: Deno (Lovable Cloud Edge Functions)
+- **Database**: Supabase (via Lovable Cloud)
+- **AI**: Lovable AI Gateway (Google Gemini)
+- **APIs**: Discord API v10
 
-Changes made via Lovable will be committed automatically to this repo.
+## Setup Instructions
 
-**Use your preferred IDE**
+### Prerequisites
+1. A Discord bot with Message Content Intent enabled
+2. Discord bot invited to your server with permissions:
+   - Read Messages
+   - Read Message History
+   - Send Messages
+   - Embed Links
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+### Configuration
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+All secrets are managed through Lovable Cloud:
 
-Follow these steps:
+1. **DISCORD_TOKEN**: Your Discord bot token (starts with `Bot ` if copied from Discord)
+2. **SUMMARY_CHANNEL_ID**: Numeric ID of the channel where summaries will be posted
+3. **CHANNEL_IDS**: Comma-separated numeric IDs of channels to scan (e.g., `123456,789012`)
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+### Getting Channel IDs
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+1. Enable Developer Mode in Discord (User Settings → Advanced → Developer Mode)
+2. Right-click any channel → Copy ID
 
-# Step 3: Install the necessary dependencies.
-npm i
+### Running Locally
 
-# Step 4: Start the development server with auto-reloading and an instant preview.
+```bash
+# Install dependencies
+npm install
+
+# Start development server
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+The app will be available at `http://localhost:8080`
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+### Deployment
 
-**Use GitHub Codespaces**
+This app is designed to run on Lovable:
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+1. Push changes to the connected GitHub repository
+2. Lovable automatically deploys the app
+3. Edge functions are deployed automatically
 
-## What technologies are used for this project?
+## How It Works
 
-This project is built with:
+1. **Trigger**: Click "Run Summary Now" in the web UI
+2. **Scan**: Edge function fetches messages from configured Discord channels from today (America/Chicago timezone)
+3. **Extract**: Pulls all URLs from message content and embeds, then deduplicates
+4. **Scrape**: Fetches article titles and descriptions from each URL
+5. **Summarize**: Lovable AI generates a structured Markdown summary
+6. **Post**: Summary is posted to Discord (inline if short, as file if >1800 chars)
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+## Summary Format
 
-## How can I deploy this project?
+```markdown
+# Daily AI News — YYYY-MM-DD (America/Chicago)
 
-Simply open [Lovable](https://lovable.dev/projects/bca520c8-81ba-4f1f-ac37-bd8c0c5d32d3) and click on Share -> Publish.
+## TL;DR
+- Key highlight 1
+- Key highlight 2
+...
 
-## Can I connect a custom domain to my Lovable project?
+## Notable Launches & Updates
+- Product/feature announcements
 
-Yes, you can!
+## Research & Papers
+- Academic and technical research
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+## Funding & Policy
+- Investments and regulations
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+## All Links
+- **[Title](URL)**: One-line summary
+```
+
+## Technology Stack
+
+- **Frontend**: React, TypeScript, Tailwind CSS, shadcn/ui
+- **Backend**: Deno, Lovable Cloud (Supabase)
+- **AI**: Lovable AI Gateway (Google Gemini 2.5 Flash)
+- **APIs**: Discord API v10
+- **Deployment**: Lovable Cloud
+
+## Project Structure
+
+```
+discord-ai-daily/
+├── src/
+│   ├── pages/
+│   │   └── Index.tsx           # Main dashboard
+│   ├── components/
+│   │   └── ui/                 # shadcn/ui components
+│   └── integrations/
+│       └── supabase/           # Supabase client
+├── supabase/
+│   └── functions/
+│       └── daily-ai-summary/   # Edge function
+│           └── index.ts        # Main logic
+└── README.md
+```
+
+## Edge Function Details
+
+The `daily-ai-summary` edge function:
+- Fetches Discord messages using Discord API v10
+- Filters messages from current local day (America/Chicago)
+- Normalizes and deduplicates URLs
+- Scrapes article metadata
+- Calls Lovable AI for summary generation
+- Posts result to Discord channel
+
+## Customization
+
+### Change AI Model
+Edit `supabase/functions/daily-ai-summary/index.ts`:
+```typescript
+model: 'google/gemini-2.5-flash'  // or 'google/gemini-2.5-pro'
+```
+
+### Modify Summary Structure
+Update the prompt in the `generateSummary` function to change sections or formatting.
+
+### Add Domain Filtering
+Extend the `skipDomains` array in `scrapeArticle` to exclude specific sites.
+
+## Troubleshooting
+
+### No messages found
+- Verify channel IDs are correct numeric IDs
+- Check bot has access to the channels
+- Ensure Message Content Intent is enabled
+
+### Summary not posting
+- Verify SUMMARY_CHANNEL_ID is correct
+- Check bot has Send Messages permission
+- Review edge function logs in Lovable Cloud
+
+### Scraping issues
+- Some sites block automated scraping
+- Meta descriptions may be limited
+- Timeout may occur for slow sites
+
+## License
+
+MIT
+
+## Links
+
+- [Lovable Documentation](https://docs.lovable.dev)
+- [Discord Developer Portal](https://discord.com/developers)
+- [Supabase Documentation](https://supabase.com/docs)
