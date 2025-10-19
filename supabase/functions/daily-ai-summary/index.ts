@@ -175,15 +175,83 @@ function normalizeUrl(url: string): string {
   }
 }
 
+function extractYouTubeId(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname.includes('youtube.com')) {
+      return parsed.searchParams.get('v');
+    } else if (parsed.hostname.includes('youtu.be')) {
+      return parsed.pathname.slice(1);
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function getYouTubeTranscript(url: string): Promise<ArticleData | null> {
+  const videoId = extractYouTubeId(url);
+  if (!videoId) return null;
+
+  try {
+    // Fetch video page to get title
+    const response = await fetch(url);
+    const html = await response.text();
+    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    const title = titleMatch ? titleMatch[1].trim() : `YouTube Video ${videoId}`;
+
+    // Fetch transcript using YouTube's API
+    const transcriptUrl = `https://www.youtube.com/api/timedtext?lang=en&v=${videoId}`;
+    const transcriptResponse = await fetch(transcriptUrl);
+    
+    if (!transcriptResponse.ok) {
+      console.log(`No transcript available for video ${videoId}`);
+      return null;
+    }
+
+    const transcriptXml = await transcriptResponse.text();
+    
+    // Parse XML transcript
+    const textMatches = transcriptXml.matchAll(/<text[^>]*>([^<]+)<\/text>/g);
+    let transcriptText = '';
+    for (const match of textMatches) {
+      const decodedText = match[1]
+        .replace(/&amp;#39;/g, "'")
+        .replace(/&amp;quot;/g, '"')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>');
+      transcriptText += decodedText + ' ';
+    }
+
+    if (!transcriptText.trim()) return null;
+
+    return {
+      url,
+      title,
+      text: `[VIDEO TRANSCRIPT] ${transcriptText.slice(0, 2000)}` // Limit length
+    };
+  } catch (error) {
+    console.error(`Error getting YouTube transcript for ${url}:`, error);
+    return null;
+  }
+}
+
 function formatDate(date: Date): string {
   return date.toISOString().split('T')[0]; // YYYY-MM-DD
 }
 
 async function scrapeArticle(url: string): Promise<ArticleData | null> {
   try {
-    // Skip non-article URLs
-    const skipDomains = ['youtube.com', 'youtu.be', 'twitter.com', 'x.com', 'imgur.com', 'giphy.com'];
     const urlObj = new URL(url);
+    
+    // Handle YouTube videos separately
+    if (urlObj.hostname.includes('youtube.com') || urlObj.hostname.includes('youtu.be')) {
+      return await getYouTubeTranscript(url);
+    }
+    
+    // Skip other non-article URLs
+    const skipDomains = ['twitter.com', 'x.com', 'imgur.com', 'giphy.com'];
     if (skipDomains.some(domain => urlObj.hostname.includes(domain))) {
       return null;
     }
@@ -221,9 +289,9 @@ async function generateSummary(articles: ArticleData[], apiKey: string): Promise
     `${idx + 1}. ${article.title}\nURL: ${article.url}\nContent: ${article.text.substring(0, 500)}`
   ).join('\n\n');
 
-  const prompt = `You are an AI news curator. Generate a concise daily brief from these AI-related articles.
+  const prompt = `You are an AI news curator. Generate a concise daily brief from these AI-related articles and videos.
 
-Articles:
+Articles and Videos:
 ${articleList}
 
 Create a Markdown summary with this exact structure:
@@ -242,10 +310,13 @@ Create a Markdown summary with this exact structure:
 ## Funding & Policy
 (Investments, regulations, policy changes)
 
-## All Links
-(For each article: - **[Title](URL)**: One-line summary)
+## Video Summaries
+(For videos with transcripts, provide a concise summary of the key points discussed)
 
-Use concrete facts, no hype. Be specific about numbers, companies, and products.`;
+## All Links
+(For each article/video: - **[Title](URL)**: One-line summary)
+
+Use concrete facts, no hype. Be specific about numbers, companies, and products. For video transcripts, provide a brief summary of the main topics discussed.`;
 
   try {
     const response = await fetch(

@@ -9,11 +9,12 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
+from youtube_transcript_api import YouTubeTranscriptApi
 
 # Load environment variables from .env file
 load_dotenv()
@@ -59,11 +60,51 @@ def get_discord_messages(channel_id: str, token: str) -> List[Dict]:
         print(f"Error fetching messages from channel {channel_id}: {e}")
         return []
 
+def extract_youtube_id(url: str) -> Optional[str]:
+    """Extract YouTube video ID from URL"""
+    parsed = urlparse(url)
+    if 'youtube.com' in parsed.netloc:
+        query = parse_qs(parsed.query)
+        return query.get('v', [None])[0]
+    elif 'youtu.be' in parsed.netloc:
+        return parsed.path.lstrip('/')
+    return None
+
+def get_youtube_transcript(url: str) -> Optional[Dict[str, str]]:
+    """Get YouTube video transcript"""
+    video_id = extract_youtube_id(url)
+    if not video_id:
+        return None
+    
+    try:
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        transcript_text = ' '.join([item['text'] for item in transcript_list])
+        
+        # Get video title from URL
+        headers = {'User-Agent': 'AI-News-Summarizer/1.0'}
+        response = requests.get(url, headers=headers, timeout=10)
+        title_match = re.search(r'<title[^>]*>([^<]+)</title>', response.text, re.IGNORECASE)
+        title = title_match.group(1).strip() if title_match else f"YouTube Video {video_id}"
+        
+        return {
+            'url': url,
+            'title': title,
+            'text': f"[VIDEO TRANSCRIPT] {transcript_text[:2000]}"  # Limit transcript length
+        }
+    except Exception as e:
+        print(f"Error getting YouTube transcript for {url}: {e}")
+        return None
+
 def scrape_article(url: str) -> Optional[Dict[str, str]]:
     """Scrape article content from URL"""
-    # Skip non-article domains
-    skip_domains = ['youtube.com', 'youtu.be', 'twitter.com', 'x.com', 'imgur.com', 'giphy.com']
     parsed = urlparse(url)
+    
+    # Handle YouTube videos separately
+    if 'youtube.com' in parsed.netloc or 'youtu.be' in parsed.netloc:
+        return get_youtube_transcript(url)
+    
+    # Skip other non-article domains
+    skip_domains = ['twitter.com', 'x.com', 'imgur.com', 'giphy.com']
     if any(domain in parsed.netloc for domain in skip_domains):
         return None
     
@@ -99,9 +140,9 @@ def generate_summary(articles: List[Dict[str, str]], api_key: str) -> str:
         for i, article in enumerate(articles)
     ])
     
-    prompt = f"""You are an AI news curator. Generate a concise daily brief from these AI-related articles.
+    prompt = f"""You are an AI news curator. Generate a concise daily brief from these AI-related articles and videos.
 
-Articles:
+Articles and Videos:
 {article_list}
 
 Create a Markdown summary with this exact structure:
@@ -120,10 +161,13 @@ Create a Markdown summary with this exact structure:
 ## Funding & Policy
 (Investments, regulations, policy changes)
 
-## All Links
-(For each article: - **[Title](URL)**: One-line summary)
+## Video Summaries
+(For videos with transcripts, provide a concise summary of the key points discussed)
 
-Use concrete facts, no hype. Be specific about numbers, companies, and products."""
+## All Links
+(For each article/video: - **[Title](URL)**: One-line summary)
+
+Use concrete facts, no hype. Be specific about numbers, companies, and products. For video transcripts, provide a brief summary of the main topics discussed."""
     
     url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={api_key}'
     
