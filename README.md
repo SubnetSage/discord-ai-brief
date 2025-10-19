@@ -48,31 +48,41 @@ All secrets are managed through Lovable Cloud:
 1. Enable Developer Mode in Discord (User Settings → Advanced → Developer Mode)
 2. Right-click any channel → Copy ID
 
-### Running Completely Locally (No Supabase/Cloud)
+### Running Locally
 
-#### 1. Run the Deno Function
+#### 1. Install Python Dependencies
 
 ```bash
-cd supabase/functions/daily-ai-summary
+pip install -r requirements.txt
+```
 
-# Set your environment variables
+#### 2. Set Environment Variables
+
+```bash
 export DISCORD_TOKEN="your_discord_bot_token"
 export CHANNEL_IDS="channel_id_1,channel_id_2"
 export SUMMARY_CHANNEL_ID="summary_channel_id"
 export GOOGLE_API_KEY="your_google_gemini_api_key"
-
-# Run the function on port 8000
-deno run --allow-net --allow-env index.ts
 ```
 
-#### 2. Run the Frontend
+Or create a `.env` file (not tracked in git) and load it before running.
+
+#### 3. Run the Python Server
+
+```bash
+python daily_ai_summary.py
+```
+
+The server will start on `http://localhost:8000`
+
+#### 4. Run the Frontend
 
 ```bash
 npm install
 npm run dev
 ```
 
-The app will be available at `http://localhost:8080` and will call your local Deno function at `http://localhost:8000`
+The app will be available at `http://localhost:8080` and will call your local Python server at `http://localhost:8000`
 
 ### Deployment
 
