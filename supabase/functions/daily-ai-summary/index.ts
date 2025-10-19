@@ -325,36 +325,14 @@ async function generateSummary(articles: ArticleData[], apiKey: string): Promise
     `${idx + 1}. ${article.title}\nURL: ${article.url}\nContent: ${article.text.substring(0, 500)}`
   ).join('\n\n');
 
-  const prompt = `You are an AI news curator. Generate a concise daily brief from these AI-related articles and videos.
+  const prompt = `You are an AI news curator. Extract and summarize the notable AI news from these articles and videos.
 
 Articles and Videos:
 ${articleList}
 
 Note: Items prefixed with [VIDEO TRANSCRIPT] are YouTube video transcripts. Items with [VIDEO - ...] are videos without available transcripts.
 
-Create a Markdown summary with this exact structure:
-
-# Daily AI News — ${date} (America/Chicago)
-
-## TL;DR
-(5-10 bullet points of the most important updates)
-
-## Notable Launches & Updates
-(Product releases, feature announcements)
-
-## Research & Papers
-(Academic papers, technical research)
-
-## Funding & Policy
-(Investments, regulations, policy changes)
-
-## Video Summaries
-(YouTube videos with transcripts: - **[Title](URL)**: Summary of key points from the video)
-
-## All Links
-(For each article/video: - **[Title](URL)**: One-line summary)
-
-Use concrete facts, no hype. Be specific about numbers, companies, and products.`;
+Create a concise Markdown summary titled "# Daily AI News — ${date} (America/Chicago)" that highlights the most important and interesting developments. Use concrete facts, no hype. Be specific about numbers, companies, and products. Include links to sources.`;
 
   try {
     const response = await fetch(
