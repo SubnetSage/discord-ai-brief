@@ -31,6 +31,7 @@ serve(async (req) => {
     const SUMMARY_CHANNEL_ID = Deno.env.get('SUMMARY_CHANNEL_ID');
     const CHANNEL_IDS = Deno.env.get('CHANNEL_IDS');
     const GOOGLE_API_KEY = Deno.env.get('GOOGLE_API_KEY');
+    const APIFY_API_TOKEN = Deno.env.get('APIFY_API_TOKEN');
 
     if (!DISCORD_TOKEN || !SUMMARY_CHANNEL_ID || !CHANNEL_IDS || !GOOGLE_API_KEY) {
       throw new Error('Missing required environment variables');
@@ -167,11 +168,126 @@ function formatDate(date: Date): string {
   return date.toISOString().split('T')[0]; // YYYY-MM-DD
 }
 
+function extractYouTubeId(url: string): string | null {
+  const patterns = [
+    /(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/,
+    /youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/,
+  ];
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+async function getYouTubeTranscript(url: string): Promise<ArticleData | null> {
+  const APIFY_API_TOKEN = Deno.env.get('APIFY_API_TOKEN');
+  
+  if (!APIFY_API_TOKEN) {
+    console.log(`Skipping YouTube ${url}: APIFY_API_TOKEN not configured`);
+    return null;
+  }
+  
+  const videoId = extractYouTubeId(url);
+  if (!videoId) {
+    console.error(`Could not extract video ID from ${url}`);
+    return null;
+  }
+  
+  try {
+    // Get video title from YouTube page
+    const pageResponse = await fetch(url, {
+      headers: { 'User-Agent': 'AI-News-Summarizer/1.0' },
+    });
+    const html = await pageResponse.text();
+    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    let title = titleMatch ? titleMatch[1].trim().replace(' - YouTube', '') : `YouTube Video ${videoId}`;
+    
+    // Start Apify actor run
+    const actorUrl = `https://api.apify.com/v2/acts/pintostudio~youtube-transcript-scraper/runs?token=${APIFY_API_TOKEN}`;
+    const actorPayload = { videoUrl: url };
+    
+    console.log(`Starting Apify actor for ${url}...`);
+    const runResponse = await fetch(actorUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(actorPayload),
+    });
+    
+    if (!runResponse.ok) {
+      throw new Error(`Apify actor start failed: ${runResponse.status}`);
+    }
+    
+    const runData = await runResponse.json();
+    const runId = runData.data.id;
+    
+    // Poll for completion (max 60 seconds)
+    const statusUrl = `https://api.apify.com/v2/acts/pintostudio~youtube-transcript-scraper/runs/${runId}?token=${APIFY_API_TOKEN}`;
+    
+    for (let i = 0; i < 30; i++) {  // 30 attempts * 2 seconds = 60 seconds max
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      const statusResponse = await fetch(statusUrl);
+      if (!statusResponse.ok) {
+        throw new Error(`Status check failed: ${statusResponse.status}`);
+      }
+      
+      const statusData = await statusResponse.json();
+      const status = statusData.data.status;
+      
+      if (status === 'SUCCEEDED') {
+        // Fetch dataset results
+        const datasetId = runData.data.defaultDatasetId;
+        const datasetUrl = `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_TOKEN}`;
+        const datasetResponse = await fetch(datasetUrl);
+        
+        if (!datasetResponse.ok) {
+          throw new Error(`Dataset fetch failed: ${datasetResponse.status}`);
+        }
+        
+        const results = await datasetResponse.json();
+        
+        if (results && results.length > 0 && results[0].transcript) {
+          const transcriptText = results[0].transcript;
+          return {
+            url,
+            title,
+            text: `[VIDEO TRANSCRIPT] ${transcriptText.substring(0, 2000)}`
+          };
+        } else {
+          console.log(`No transcript available for ${url}`);
+          return { url, title, text: '[VIDEO - No transcript available]' };
+        }
+      } else if (['FAILED', 'ABORTED', 'TIMED-OUT'].includes(status)) {
+        console.error(`Apify run failed with status: ${status}`);
+        return { url, title, text: '[VIDEO - Transcript extraction failed]' };
+      }
+    }
+    
+    console.error(`Apify run timed out for ${url}`);
+    return { url, title, text: '[VIDEO - Transcript extraction timed out]' };
+    
+  } catch (error) {
+    console.error(`Error fetching YouTube transcript for ${url}:`, error);
+    return { 
+      url, 
+      title: `YouTube Video ${videoId}`, 
+      text: '[VIDEO - Error fetching transcript]' 
+    };
+  }
+}
+
 async function scrapeArticle(url: string): Promise<ArticleData | null> {
   try {
-    // Skip non-article URLs
-    const skipDomains = ['youtube.com', 'youtu.be', 'twitter.com', 'x.com', 'imgur.com', 'giphy.com'];
     const urlObj = new URL(url);
+    
+    // Handle YouTube URLs separately
+    if (urlObj.hostname.includes('youtube.com') || urlObj.hostname.includes('youtu.be')) {
+      return await getYouTubeTranscript(url);
+    }
+    
+    // Skip non-article URLs
+    const skipDomains = ['twitter.com', 'x.com', 'imgur.com', 'giphy.com'];
     if (skipDomains.some(domain => urlObj.hostname.includes(domain))) {
       return null;
     }
@@ -209,10 +325,12 @@ async function generateSummary(articles: ArticleData[], apiKey: string): Promise
     `${idx + 1}. ${article.title}\nURL: ${article.url}\nContent: ${article.text.substring(0, 500)}`
   ).join('\n\n');
 
-  const prompt = `You are an AI news curator. Generate a concise daily brief from these AI-related articles.
+  const prompt = `You are an AI news curator. Generate a concise daily brief from these AI-related articles and videos.
 
-Articles:
+Articles and Videos:
 ${articleList}
+
+Note: Items prefixed with [VIDEO TRANSCRIPT] are YouTube video transcripts. Items with [VIDEO - ...] are videos without available transcripts.
 
 Create a Markdown summary with this exact structure:
 
@@ -230,8 +348,11 @@ Create a Markdown summary with this exact structure:
 ## Funding & Policy
 (Investments, regulations, policy changes)
 
+## Video Summaries
+(YouTube videos with transcripts: - **[Title](URL)**: Summary of key points from the video)
+
 ## All Links
-(For each article: - **[Title](URL)**: One-line summary)
+(For each article/video: - **[Title](URL)**: One-line summary)
 
 Use concrete facts, no hype. Be specific about numbers, companies, and products.`;
 

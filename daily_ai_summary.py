@@ -7,6 +7,7 @@ Fetches links from Discord channels, scrapes articles, and generates AI summarie
 import os
 import json
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 from urllib.parse import urlparse
@@ -26,6 +27,7 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 SUMMARY_CHANNEL_ID = os.getenv('SUMMARY_CHANNEL_ID')
 CHANNEL_IDS = os.getenv('CHANNEL_IDS', '').split(',')
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
+APIFY_API_TOKEN = os.getenv('APIFY_API_TOKEN')
 
 def normalize_url(url: str) -> str:
     """Normalize URL by removing fragments and converting to lowercase"""
@@ -59,11 +61,94 @@ def get_discord_messages(channel_id: str, token: str) -> List[Dict]:
         print(f"Error fetching messages from channel {channel_id}: {e}")
         return []
 
+def extract_youtube_id(url: str) -> Optional[str]:
+    """Extract YouTube video ID from URL"""
+    patterns = [
+        r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})',
+        r'youtube\.com\/embed\/([a-zA-Z0-9_-]{11})',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
+def get_youtube_transcript(url: str) -> Optional[Dict[str, str]]:
+    """Fetch YouTube transcript via Apify API"""
+    if not APIFY_API_TOKEN:
+        print(f"Skipping YouTube {url}: APIFY_API_TOKEN not configured")
+        return None
+    
+    video_id = extract_youtube_id(url)
+    if not video_id:
+        print(f"Could not extract video ID from {url}")
+        return None
+    
+    try:
+        # Get video title from YouTube page
+        headers = {'User-Agent': 'AI-News-Summarizer/1.0'}
+        response = requests.get(url, headers=headers, timeout=10)
+        title_match = re.search(r'<title[^>]*>([^<]+)</title>', response.text, re.IGNORECASE)
+        title = title_match.group(1).strip().replace(' - YouTube', '') if title_match else f'YouTube Video {video_id}'
+        
+        # Start Apify actor run
+        actor_url = f"https://api.apify.com/v2/acts/pintostudio~youtube-transcript-scraper/runs?token={APIFY_API_TOKEN}"
+        actor_payload = {"videoUrl": url}
+        
+        print(f"Starting Apify actor for {url}...")
+        run_response = requests.post(actor_url, json=actor_payload, timeout=30)
+        run_response.raise_for_status()
+        run_data = run_response.json()
+        run_id = run_data['data']['id']
+        
+        # Poll for completion (max 60 seconds)
+        status_url = f"https://api.apify.com/v2/acts/pintostudio~youtube-transcript-scraper/runs/{run_id}?token={APIFY_API_TOKEN}"
+        for _ in range(30):  # 30 attempts * 2 seconds = 60 seconds max
+            time.sleep(2)
+            status_response = requests.get(status_url, timeout=10)
+            status_response.raise_for_status()
+            status = status_response.json()['data']['status']
+            
+            if status == 'SUCCEEDED':
+                # Fetch dataset results
+                dataset_id = run_data['data']['defaultDatasetId']
+                dataset_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?token={APIFY_API_TOKEN}"
+                dataset_response = requests.get(dataset_url, timeout=10)
+                dataset_response.raise_for_status()
+                results = dataset_response.json()
+                
+                if results and len(results) > 0 and 'transcript' in results[0]:
+                    transcript_text = results[0]['transcript']
+                    return {
+                        'url': url,
+                        'title': title,
+                        'text': f'[VIDEO TRANSCRIPT] {transcript_text[:2000]}'
+                    }
+                else:
+                    print(f"No transcript available for {url}")
+                    return {'url': url, 'title': title, 'text': '[VIDEO - No transcript available]'}
+            
+            elif status in ['FAILED', 'ABORTED', 'TIMED-OUT']:
+                print(f"Apify run failed with status: {status}")
+                return {'url': url, 'title': title, 'text': '[VIDEO - Transcript extraction failed]'}
+        
+        print(f"Apify run timed out for {url}")
+        return {'url': url, 'title': title, 'text': '[VIDEO - Transcript extraction timed out]'}
+        
+    except Exception as e:
+        print(f"Error fetching YouTube transcript for {url}: {e}")
+        return {'url': url, 'title': title if 'title' in locals() else f'YouTube Video {video_id}', 'text': '[VIDEO - Error fetching transcript]'}
+
 def scrape_article(url: str) -> Optional[Dict[str, str]]:
     """Scrape article content from URL"""
-    # Skip non-article domains
-    skip_domains = ['youtube.com', 'youtu.be', 'twitter.com', 'x.com', 'imgur.com', 'giphy.com']
     parsed = urlparse(url)
+    
+    # Handle YouTube URLs separately
+    if 'youtube.com' in parsed.netloc or 'youtu.be' in parsed.netloc:
+        return get_youtube_transcript(url)
+    
+    # Skip non-article domains
+    skip_domains = ['twitter.com', 'x.com', 'imgur.com', 'giphy.com']
     if any(domain in parsed.netloc for domain in skip_domains):
         return None
     
@@ -99,10 +184,12 @@ def generate_summary(articles: List[Dict[str, str]], api_key: str) -> str:
         for i, article in enumerate(articles)
     ])
     
-    prompt = f"""You are an AI news curator. Generate a concise daily brief from these AI-related articles.
+    prompt = f"""You are an AI news curator. Generate a concise daily brief from these AI-related articles and videos.
 
-Articles:
+Articles and Videos:
 {article_list}
+
+Note: Items prefixed with [VIDEO TRANSCRIPT] are YouTube video transcripts. Items with [VIDEO - ...] are videos without available transcripts.
 
 Create a Markdown summary with this exact structure:
 
@@ -120,8 +207,11 @@ Create a Markdown summary with this exact structure:
 ## Funding & Policy
 (Investments, regulations, policy changes)
 
+## Video Summaries
+(YouTube videos with transcripts: - **[Title](URL)**: Summary of key points from the video)
+
 ## All Links
-(For each article: - **[Title](URL)**: One-line summary)
+(For each article/video: - **[Title](URL)**: One-line summary)
 
 Use concrete facts, no hype. Be specific about numbers, companies, and products."""
     
