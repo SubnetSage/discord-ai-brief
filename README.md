@@ -50,14 +50,31 @@ All secrets are managed through Lovable Cloud:
 
 ### Running Locally
 
-#### 1. Create a Virtual Environment (Recommended)
+#### Option 1: Quick Start (Recommended)
+
+Make the startup script executable and run it:
+
+```bash
+chmod +x start-server.sh
+./start-server.sh
+```
+
+This script will automatically:
+- Create the virtual environment (if needed)
+- Activate the virtual environment
+- Install dependencies
+- Start the Python server on `http://localhost:8000`
+
+#### Option 2: Manual Setup
+
+##### 1. Create a Virtual Environment
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
-#### 2. Install Python Dependencies
+##### 2. Install Python Dependencies
 
 ```bash
 pip install -r requirements.txt
