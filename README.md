@@ -48,56 +48,31 @@ All secrets are managed through Lovable Cloud:
 1. Enable Developer Mode in Discord (User Settings → Advanced → Developer Mode)
 2. Right-click any channel → Copy ID
 
-### Running Locally
+### Running Completely Locally (No Supabase/Cloud)
 
-#### Frontend
+#### 1. Run the Deno Function
 
 ```bash
-# Install dependencies
-npm install
+cd supabase/functions/daily-ai-summary
 
-# Start development server
+# Set your environment variables
+export DISCORD_TOKEN="your_discord_bot_token"
+export CHANNEL_IDS="channel_id_1,channel_id_2"
+export SUMMARY_CHANNEL_ID="summary_channel_id"
+export GOOGLE_API_KEY="your_google_gemini_api_key"
+
+# Run the function on port 8000
+deno run --allow-net --allow-env index.ts
+```
+
+#### 2. Run the Frontend
+
+```bash
+npm install
 npm run dev
 ```
 
-The app will be available at `http://localhost:8080`
-
-#### Edge Functions (Local Development)
-
-1. **Install Supabase CLI**:
-```bash
-npm install -g supabase
-```
-
-2. **Start Supabase locally**:
-```bash
-supabase start
-```
-
-3. **Create secrets file** at `supabase/.env`:
-```bash
-DISCORD_TOKEN=your_discord_bot_token
-SUMMARY_CHANNEL_ID=your_summary_channel_id
-CHANNEL_IDS=comma_separated_channel_ids
-GOOGLE_API_KEY=your_google_gemini_api_key
-```
-
-4. **Serve the edge function**:
-```bash
-supabase functions serve daily-ai-summary --env-file supabase/.env
-```
-
-5. **Test the function**:
-```bash
-curl -i --location --request POST 'http://localhost:54321/functions/v1/daily-ai-summary' \
-  --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0' \
-  --header 'Content-Type: application/json'
-```
-
-> Note: Update your frontend `.env` to point to local Supabase:
-> ```
-> VITE_SUPABASE_URL=http://localhost:54321
-> ```
+The app will be available at `http://localhost:8080` and will call your local Deno function at `http://localhost:8000`
 
 ### Deployment
 

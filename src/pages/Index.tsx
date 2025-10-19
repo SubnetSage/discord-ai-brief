@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, PlayCircle, Calendar, Link as LinkIcon } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+
 
 const Index = () => {
   const { toast } = useToast();
@@ -23,21 +23,30 @@ const Index = () => {
         description: "Scanning Discord channels for today's links...",
       });
 
-      const { data, error } = await supabase.functions.invoke('daily-ai-summary', {
-        body: {}
+      // Call local Deno function directly
+      const response = await fetch('http://localhost:8000', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
       });
 
-      if (error) throw error;
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || 'Failed to generate summary');
+      }
+
+      const data = await response.json();
 
       setLastRun({
-        linkCount: data.linkCount || 0,
-        articleCount: data.articleCount || 0,
+        linkCount: data.linksFound || 0,
+        articleCount: data.articlesScraped || 0,
         timestamp: new Date().toISOString(),
       });
 
       toast({
         title: "✅ Summary generated!",
-        description: `Processed ${data.linkCount} links and posted to Discord`,
+        description: `Processed ${data.linksFound} links and posted to Discord`,
       });
 
     } catch (error) {
