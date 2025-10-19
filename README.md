@@ -63,16 +63,18 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-#### 3. Set Environment Variables
+#### 3. Configure Environment Variables
 
-```bash
-export DISCORD_TOKEN="your_discord_bot_token"
-export CHANNEL_IDS="channel_id_1,channel_id_2"
-export SUMMARY_CHANNEL_ID="summary_channel_id"
-export GOOGLE_API_KEY="your_google_gemini_api_key"
+Add your credentials to the `.env` file:
+
+```env
+DISCORD_TOKEN=your_discord_bot_token
+CHANNEL_IDS=channel_id_1,channel_id_2
+SUMMARY_CHANNEL_ID=summary_channel_id
+GOOGLE_API_KEY=your_google_gemini_api_key
 ```
 
-Or create a `.env` file (not tracked in git) and load it before running.
+The `.env` file is automatically loaded when you run the Python server.
 
 #### 4. Run the Python Server
 
