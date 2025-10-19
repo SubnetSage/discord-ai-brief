@@ -133,6 +133,25 @@ serve(async (req) => {
 
     console.log(`Successfully scraped ${articles.length} articles`);
 
+    // Validate we have content before generating summary
+    if (articles.length === 0) {
+      const noContentMessage = `# Daily AI News — ${formatDate(new Date())}\n\n*No articles could be scraped from the ${allUrls.size} links found.*`;
+      await postToDiscord(discordAuth, SUMMARY_CHANNEL_ID, noContentMessage);
+      return new Response(
+        JSON.stringify({ success: true, linkCount: allUrls.size, articleCount: 0, message: 'No articles scraped' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Debug: Show sample of what we're sending to AI
+    console.log('\n--- Scraped Articles Sample ---');
+    articles.slice(0, 3).forEach((article, i) => {
+      console.log(`${i+1}. ${article.title.substring(0, 60)}...`);
+      console.log(`   Content length: ${article.text.length} chars`);
+      console.log(`   Is video: ${article.text.includes('VIDEO TRANSCRIPT')}`);
+    });
+    console.log('--- End Sample ---\n');
+
     // Generate summary using Google Gemini
     console.log('Generating AI summary...');
     const summary = await generateSummary(articles, GOOGLE_API_KEY);
@@ -191,10 +210,13 @@ function extractYouTubeId(url: string): string | null {
 
 async function getYouTubeTranscript(url: string): Promise<ArticleData | null> {
   const videoId = extractYouTubeId(url);
-  if (!videoId) return null;
+  if (!videoId) {
+    console.log(`Could not extract video ID from URL: ${url}`);
+    return null;
+  }
 
   try {
-    // Fetch video page to get title
+    // Fetch video page to get title first
     const response = await fetch(url);
     const html = await response.text();
     const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
@@ -205,8 +227,13 @@ async function getYouTubeTranscript(url: string): Promise<ArticleData | null> {
     const transcriptResponse = await fetch(transcriptUrl);
     
     if (!transcriptResponse.ok) {
-      console.log(`No transcript available for video ${videoId}`);
-      return null;
+      console.log(`⚠ No transcript available for video ${videoId}`);
+      // Return basic info even without transcript
+      return {
+        url,
+        title,
+        text: '[VIDEO - No transcript available]'
+      };
     }
 
     const transcriptXml = await transcriptResponse.text();
@@ -224,7 +251,15 @@ async function getYouTubeTranscript(url: string): Promise<ArticleData | null> {
       transcriptText += decodedText + ' ';
     }
 
-    if (!transcriptText.trim()) return null;
+    if (!transcriptText.trim()) {
+      return {
+        url,
+        title,
+        text: '[VIDEO - No transcript available]'
+      };
+    }
+
+    console.log(`✓ Got transcript for video: ${title}`);
 
     return {
       url,
@@ -232,8 +267,21 @@ async function getYouTubeTranscript(url: string): Promise<ArticleData | null> {
       text: `[VIDEO TRANSCRIPT] ${transcriptText.slice(0, 2000)}` // Limit length
     };
   } catch (error) {
-    console.error(`Error getting YouTube transcript for ${url}:`, error);
-    return null;
+    console.error(`⚠ Error getting YouTube transcript for ${url}:`, error);
+    // Return basic info even on error
+    try {
+      const response = await fetch(url);
+      const html = await response.text();
+      const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+      const title = titleMatch ? titleMatch[1].trim() : `YouTube Video ${videoId}`;
+      return {
+        url,
+        title,
+        text: '[VIDEO - No transcript available]'
+      };
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -284,17 +332,26 @@ async function scrapeArticle(url: string): Promise<ArticleData | null> {
 async function generateSummary(articles: ArticleData[], apiKey: string): Promise<string> {
   const date = formatDate(new Date());
   
-  // Prepare article list
-  const articleList = articles.map((article, idx) => 
+  // Validate articles have content
+  const validArticles = articles.filter(a => a.text && a.text.trim().length > 20);
+  
+  if (validArticles.length === 0) {
+    return `# Daily AI News — ${date}\n\n*No substantial content could be extracted from the articles found.*`;
+  }
+  
+  // Prepare article list with clear indication of content type
+  const articleList = validArticles.map((article, idx) => 
     `${idx + 1}. ${article.title}\nURL: ${article.url}\nContent: ${article.text.substring(0, 500)}`
   ).join('\n\n');
 
-  const prompt = `You are an AI news curator. Generate a concise daily brief from these AI-related articles and videos.
+  const prompt = `You are generating a daily AI news summary. Below are ${validArticles.length} articles and videos that were shared today.
+
+IMPORTANT: You must immediately generate the summary in the specified format. Do not ask for more information.
 
 Articles and Videos:
 ${articleList}
 
-Create a Markdown summary with this exact structure:
+Generate a Markdown summary NOW with this exact structure:
 
 # Daily AI News — ${date} (America/Chicago)
 

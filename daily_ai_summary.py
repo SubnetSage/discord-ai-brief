@@ -74,17 +74,21 @@ def get_youtube_transcript(url: str) -> Optional[Dict[str, str]]:
     """Get YouTube video transcript"""
     video_id = extract_youtube_id(url)
     if not video_id:
+        print(f"Could not extract video ID from URL: {url}")
         return None
     
     try:
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-        transcript_text = ' '.join([item['text'] for item in transcript_list])
-        
-        # Get video title from URL
+        # Get video title from URL first
         headers = {'User-Agent': 'AI-News-Summarizer/1.0'}
         response = requests.get(url, headers=headers, timeout=10)
         title_match = re.search(r'<title[^>]*>([^<]+)</title>', response.text, re.IGNORECASE)
         title = title_match.group(1).strip() if title_match else f"YouTube Video {video_id}"
+        
+        # Try to get transcript
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        transcript_text = ' '.join([item['text'] for item in transcript_list])
+        
+        print(f"✓ Got transcript for video: {title}")
         
         return {
             'url': url,
@@ -92,8 +96,20 @@ def get_youtube_transcript(url: str) -> Optional[Dict[str, str]]:
             'text': f"[VIDEO TRANSCRIPT] {transcript_text[:2000]}"  # Limit transcript length
         }
     except Exception as e:
-        print(f"Error getting YouTube transcript for {url}: {e}")
-        return None
+        print(f"⚠ Could not get transcript for {url}: {e}")
+        # Return basic info even without transcript
+        try:
+            headers = {'User-Agent': 'AI-News-Summarizer/1.0'}
+            response = requests.get(url, headers=headers, timeout=10)
+            title_match = re.search(r'<title[^>]*>([^<]+)</title>', response.text, re.IGNORECASE)
+            title = title_match.group(1).strip() if title_match else f"YouTube Video {video_id}"
+            return {
+                'url': url,
+                'title': title,
+                'text': '[VIDEO - No transcript available]'
+            }
+        except:
+            return None
 
 def scrape_article(url: str) -> Optional[Dict[str, str]]:
     """Scrape article content from URL"""
@@ -134,18 +150,26 @@ def generate_summary(articles: List[Dict[str, str]], api_key: str) -> str:
     """Generate AI summary using Google Gemini"""
     date = format_date(datetime.now())
     
-    # Prepare article list
+    # Validate articles have content
+    valid_articles = [a for a in articles if a.get('text') and len(a['text'].strip()) > 20]
+    
+    if not valid_articles:
+        return f"# Daily AI News — {date}\n\n*No substantial content could be extracted from the articles found.*"
+    
+    # Prepare article list with clear indication of content type
     article_list = '\n\n'.join([
         f"{i+1}. {article['title']}\nURL: {article['url']}\nContent: {article['text'][:500]}"
-        for i, article in enumerate(articles)
+        for i, article in enumerate(valid_articles)
     ])
     
-    prompt = f"""You are an AI news curator. Generate a concise daily brief from these AI-related articles and videos.
+    prompt = f"""You are generating a daily AI news summary. Below are {len(valid_articles)} articles and videos that were shared today.
+
+IMPORTANT: You must immediately generate the summary in the specified format. Do not ask for more information.
 
 Articles and Videos:
 {article_list}
 
-Create a Markdown summary with this exact structure:
+Generate a Markdown summary NOW with this exact structure:
 
 # Daily AI News — {date} (America/Chicago)
 
@@ -294,6 +318,20 @@ def generate_summary_endpoint():
                 articles.append(article_data)
         
         print(f'Successfully scraped {len(articles)} articles')
+        
+        # Validate we have content before generating summary
+        if len(articles) == 0:
+            no_content_message = f"# Daily AI News — {format_date(datetime.now())}\n\n*No articles could be scraped from the {len(all_urls)} links found.*"
+            post_to_discord(DISCORD_TOKEN, SUMMARY_CHANNEL_ID, no_content_message)
+            return jsonify({'success': True, 'linksFound': len(all_urls), 'articlesScraped': 0, 'message': 'No articles scraped'}), 200
+        
+        # Debug: Show sample of what we're sending to AI
+        print(f'\n--- Scraped Articles Sample ---')
+        for i, article in enumerate(articles[:3]):
+            print(f"{i+1}. {article['title'][:60]}...")
+            print(f"   Content length: {len(article['text'])} chars")
+            print(f"   Is video: {'VIDEO TRANSCRIPT' in article['text']}")
+        print(f'--- End Sample ---\n')
         
         # Generate summary using Google Gemini
         print('Generating AI summary...')
