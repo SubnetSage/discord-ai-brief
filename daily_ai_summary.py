@@ -73,6 +73,91 @@ def extract_youtube_id(url: str) -> Optional[str]:
             return match.group(1)
     return None
 
+def is_reddit_url(url: str) -> bool:
+    """Check if URL is a Reddit post"""
+    return 'reddit.com' in url and ('/comments/' in url or '/r/' in url)
+
+def get_reddit_thread(url: str) -> Optional[Dict[str, str]]:
+    """Fetch Reddit thread content using Apify API"""
+    if not APIFY_API_TOKEN:
+        print(f"Skipping Reddit {url}: APIFY_API_TOKEN not configured")
+        return None
+    
+    try:
+        # Start Apify actor run
+        actor_url = f"https://api.apify.com/v2/acts/trudax~reddit-scraper/runs?token={APIFY_API_TOKEN}"
+        actor_payload = {
+            'startUrls': [{'url': url}],
+            'sort': 'new',
+            'maxItems': 10,
+            'maxPostCount': 10,
+            'maxComments': 10,
+            'scrollTimeout': 40,
+            'proxy': {
+                'useApifyProxy': True,
+                'apifyProxyGroups': ['RESIDENTIAL']
+            }
+        }
+        
+        print(f"Starting Apify Reddit scraper for {url}...")
+        run_response = requests.post(actor_url, json=actor_payload, timeout=30)
+        run_response.raise_for_status()
+        run_data = run_response.json()
+        run_id = run_data['data']['id']
+        
+        # Poll for completion (max 60 seconds)
+        status_url = f"https://api.apify.com/v2/acts/trudax~reddit-scraper/runs/{run_id}?token={APIFY_API_TOKEN}"
+        for _ in range(30):  # 30 attempts * 2 seconds = 60 seconds max
+            time.sleep(2)
+            status_response = requests.get(status_url, timeout=10)
+            status_response.raise_for_status()
+            status = status_response.json()['data']['status']
+            
+            if status == 'SUCCEEDED':
+                # Fetch dataset results
+                dataset_id = run_data['data']['defaultDatasetId']
+                dataset_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?token={APIFY_API_TOKEN}"
+                dataset_response = requests.get(dataset_url, timeout=10)
+                dataset_response.raise_for_status()
+                results = dataset_response.json()
+                
+                if results and len(results) > 0:
+                    post = results[0]
+                    title = post.get('title', 'Reddit Thread')
+                    text_content = post.get('text', '')
+                    comments = post.get('comments', [])
+                    
+                    # Combine post text and top comments
+                    content_parts = []
+                    if text_content:
+                        content_parts.append(f"Post: {text_content[:500]}")
+                    
+                    for comment in comments[:5]:  # Top 5 comments
+                        comment_text = comment.get('text', '')
+                        if comment_text:
+                            content_parts.append(f"Comment: {comment_text[:200]}")
+                    
+                    combined_text = ' | '.join(content_parts)
+                    return {
+                        'url': url,
+                        'title': title,
+                        'text': f'[REDDIT THREAD] {combined_text[:2000]}'
+                    }
+                else:
+                    print(f"No content found for {url}")
+                    return {'url': url, 'title': 'Reddit Thread', 'text': '[REDDIT - No content available]'}
+            
+            elif status in ['FAILED', 'ABORTED', 'TIMED-OUT']:
+                print(f"Apify run failed with status: {status}")
+                return {'url': url, 'title': 'Reddit Thread', 'text': '[REDDIT - Scraping failed]'}
+        
+        print(f"Apify run timed out for {url}")
+        return {'url': url, 'title': 'Reddit Thread', 'text': '[REDDIT - Scraping timed out]'}
+        
+    except Exception as e:
+        print(f"Error fetching Reddit thread for {url}: {e}")
+        return {'url': url, 'title': 'Reddit Thread', 'text': '[REDDIT - Error fetching content]'}
+
 def get_youtube_transcript(url: str) -> Optional[Dict[str, str]]:
     """Fetch YouTube transcript via Apify API"""
     if not APIFY_API_TOKEN:
@@ -147,6 +232,10 @@ def scrape_article(url: str) -> Optional[Dict[str, str]]:
     if 'youtube.com' in parsed.netloc or 'youtu.be' in parsed.netloc:
         return get_youtube_transcript(url)
     
+    # Handle Reddit URLs
+    if is_reddit_url(url):
+        return get_reddit_thread(url)
+    
     # Skip non-article domains
     skip_domains = ['twitter.com', 'x.com', 'imgur.com', 'giphy.com']
     if any(domain in parsed.netloc for domain in skip_domains):
@@ -186,10 +275,10 @@ def generate_summary(articles: List[Dict[str, str]], api_key: str) -> str:
     
     prompt = f"""You are an AI news curator. Extract and summarize the notable AI news from these articles and videos.
 
-Articles and Videos:
+Articles, Videos, and Discussions:
 {article_list}
 
-Note: Items prefixed with [VIDEO TRANSCRIPT] are YouTube video transcripts. Items with [VIDEO - ...] are videos without available transcripts.
+Note: Items prefixed with [VIDEO TRANSCRIPT] are YouTube video transcripts, [REDDIT THREAD] are Reddit discussions. Items with [VIDEO - ...] or [REDDIT - ...] are content without available transcripts/data.
 
 Create a concise Markdown summary titled "# Daily AI News — {date} (America/Chicago)" that highlights the most important and interesting developments. Use concrete facts, no hype. Be specific about numbers, companies, and products. Include links to sources."""
     

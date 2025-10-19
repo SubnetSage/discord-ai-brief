@@ -180,6 +180,122 @@ function extractYouTubeId(url: string): string | null {
   return null;
 }
 
+function isRedditUrl(url: string): boolean {
+  return url.includes('reddit.com') && (url.includes('/comments/') || url.includes('/r/'));
+}
+
+async function getRedditThread(url: string): Promise<ArticleData | null> {
+  const APIFY_API_TOKEN = Deno.env.get('APIFY_API_TOKEN');
+  
+  if (!APIFY_API_TOKEN) {
+    console.log(`Skipping Reddit ${url}: APIFY_API_TOKEN not configured`);
+    return null;
+  }
+  
+  try {
+    // Start Apify actor run
+    const actorUrl = `https://api.apify.com/v2/acts/trudax~reddit-scraper/runs?token=${APIFY_API_TOKEN}`;
+    const actorPayload = {
+      startUrls: [{ url }],
+      sort: 'new',
+      maxItems: 10,
+      maxPostCount: 10,
+      maxComments: 10,
+      scrollTimeout: 40,
+      proxy: {
+        useApifyProxy: true,
+        apifyProxyGroups: ['RESIDENTIAL']
+      }
+    };
+    
+    console.log(`Starting Apify Reddit scraper for ${url}...`);
+    const runResponse = await fetch(actorUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(actorPayload),
+    });
+    
+    if (!runResponse.ok) {
+      throw new Error(`Apify actor start failed: ${runResponse.status}`);
+    }
+    
+    const runData = await runResponse.json();
+    const runId = runData.data.id;
+    
+    // Poll for completion (max 60 seconds)
+    const statusUrl = `https://api.apify.com/v2/acts/trudax~reddit-scraper/runs/${runId}?token=${APIFY_API_TOKEN}`;
+    
+    for (let i = 0; i < 30; i++) {  // 30 attempts * 2 seconds = 60 seconds max
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      const statusResponse = await fetch(statusUrl);
+      if (!statusResponse.ok) {
+        throw new Error(`Status check failed: ${statusResponse.status}`);
+      }
+      
+      const statusData = await statusResponse.json();
+      const status = statusData.data.status;
+      
+      if (status === 'SUCCEEDED') {
+        // Fetch dataset results
+        const datasetId = runData.data.defaultDatasetId;
+        const datasetUrl = `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_TOKEN}`;
+        const datasetResponse = await fetch(datasetUrl);
+        
+        if (!datasetResponse.ok) {
+          throw new Error(`Dataset fetch failed: ${datasetResponse.status}`);
+        }
+        
+        const results = await datasetResponse.json();
+        
+        if (results && results.length > 0) {
+          const post = results[0];
+          const title = post.title || 'Reddit Thread';
+          const textContent = post.text || '';
+          const comments = post.comments || [];
+          
+          // Combine post text and top comments
+          const contentParts = [];
+          if (textContent) {
+            contentParts.push(`Post: ${textContent.substring(0, 500)}`);
+          }
+          
+          for (const comment of comments.slice(0, 5)) {  // Top 5 comments
+            const commentText = comment.text || '';
+            if (commentText) {
+              contentParts.push(`Comment: ${commentText.substring(0, 200)}`);
+            }
+          }
+          
+          const combinedText = contentParts.join(' | ');
+          return {
+            url,
+            title,
+            text: `[REDDIT THREAD] ${combinedText.substring(0, 2000)}`
+          };
+        } else {
+          console.log(`No content found for ${url}`);
+          return { url, title: 'Reddit Thread', text: '[REDDIT - No content available]' };
+        }
+      } else if (['FAILED', 'ABORTED', 'TIMED-OUT'].includes(status)) {
+        console.error(`Apify run failed with status: ${status}`);
+        return { url, title: 'Reddit Thread', text: '[REDDIT - Scraping failed]' };
+      }
+    }
+    
+    console.error(`Apify run timed out for ${url}`);
+    return { url, title: 'Reddit Thread', text: '[REDDIT - Scraping timed out]' };
+    
+  } catch (error) {
+    console.error(`Error fetching Reddit thread for ${url}:`, error);
+    return { 
+      url, 
+      title: 'Reddit Thread', 
+      text: '[REDDIT - Error fetching content]' 
+    };
+  }
+}
+
 async function getYouTubeTranscript(url: string): Promise<ArticleData | null> {
   const APIFY_API_TOKEN = Deno.env.get('APIFY_API_TOKEN');
   
@@ -286,6 +402,11 @@ async function scrapeArticle(url: string): Promise<ArticleData | null> {
       return await getYouTubeTranscript(url);
     }
     
+    // Handle Reddit URLs
+    if (isRedditUrl(url)) {
+      return await getRedditThread(url);
+    }
+    
     // Skip non-article URLs
     const skipDomains = ['twitter.com', 'x.com', 'imgur.com', 'giphy.com'];
     if (skipDomains.some(domain => urlObj.hostname.includes(domain))) {
@@ -327,10 +448,10 @@ async function generateSummary(articles: ArticleData[], apiKey: string): Promise
 
   const prompt = `You are an AI news curator. Extract and summarize the notable AI news from these articles and videos.
 
-Articles and Videos:
+Articles, Videos, and Discussions:
 ${articleList}
 
-Note: Items prefixed with [VIDEO TRANSCRIPT] are YouTube video transcripts. Items with [VIDEO - ...] are videos without available transcripts.
+Note: Items prefixed with [VIDEO TRANSCRIPT] are YouTube video transcripts, [REDDIT THREAD] are Reddit discussions. Items with [VIDEO - ...] or [REDDIT - ...] are content without available transcripts/data.
 
 Create a concise Markdown summary titled "# Daily AI News — ${date} (America/Chicago)" that highlights the most important and interesting developments. Use concrete facts, no hype. Be specific about numbers, companies, and products. Include links to sources.`;
 
