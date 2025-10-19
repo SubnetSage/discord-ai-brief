@@ -50,13 +50,20 @@ All secrets are managed through Lovable Cloud:
 
 ### Running Locally
 
-#### 1. Install Python Dependencies
+#### 1. Create a Virtual Environment (Recommended)
+
+```bash
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+#### 2. Install Python Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-#### 2. Set Environment Variables
+#### 3. Set Environment Variables
 
 ```bash
 export DISCORD_TOKEN="your_discord_bot_token"
@@ -67,7 +74,7 @@ export GOOGLE_API_KEY="your_google_gemini_api_key"
 
 Or create a `.env` file (not tracked in git) and load it before running.
 
-#### 3. Run the Python Server
+#### 4. Run the Python Server
 
 ```bash
 python daily_ai_summary.py
@@ -75,7 +82,7 @@ python daily_ai_summary.py
 
 The server will start on `http://localhost:8000`
 
-#### 4. Run the Frontend
+#### 5. Run the Frontend
 
 ```bash
 npm install
