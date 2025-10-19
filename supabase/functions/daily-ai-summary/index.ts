@@ -83,11 +83,23 @@ serve(async (req) => {
         if (messageTime >= startOfDay && messageTime <= endOfDay) {
           // Extract URLs from message content
           const contentUrls = message.content.match(urlRegex) || [];
-          contentUrls.forEach(url => allUrls.add(normalizeUrl(url)));
+          contentUrls.forEach(url => {
+            const normalized = normalizeUrl(url);
+            // Skip reddit.com links
+            if (!normalized.includes('reddit.com')) {
+              allUrls.add(normalized);
+            }
+          });
 
           // Extract URLs from embeds
           message.embeds.forEach(embed => {
-            if (embed.url) allUrls.add(normalizeUrl(embed.url));
+            if (embed.url) {
+              const normalized = normalizeUrl(embed.url);
+              // Skip reddit.com links
+              if (!normalized.includes('reddit.com')) {
+                allUrls.add(normalized);
+              }
+            }
           });
         }
       }

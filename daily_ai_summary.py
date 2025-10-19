@@ -221,12 +221,18 @@ def generate_summary_endpoint():
                     # Extract URLs from message content
                     content_urls = url_pattern.findall(message.get('content', ''))
                     for url in content_urls:
-                        all_urls.add(normalize_url(url))
+                        normalized = normalize_url(url)
+                        # Skip reddit.com links
+                        if 'reddit.com' not in normalized:
+                            all_urls.add(normalized)
                     
                     # Extract URLs from embeds
                     for embed in message.get('embeds', []):
                         if embed.get('url'):
-                            all_urls.add(normalize_url(embed['url']))
+                            normalized = normalize_url(embed['url'])
+                            # Skip reddit.com links
+                            if 'reddit.com' not in normalized:
+                                all_urls.add(normalized)
         
         print(f'Found {len(all_urls)} unique URLs')
         
