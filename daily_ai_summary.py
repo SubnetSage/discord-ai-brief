@@ -14,7 +14,7 @@ import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
-from youtube_transcript_api import YouTubeTranscriptApi
+import time
 
 # Load environment variables from .env file
 load_dotenv()
@@ -27,6 +27,7 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 SUMMARY_CHANNEL_ID = os.getenv('SUMMARY_CHANNEL_ID')
 CHANNEL_IDS = os.getenv('CHANNEL_IDS', '').split(',')
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
+APIFY_API_TOKEN = os.getenv('APIFY_API_TOKEN')
 
 def normalize_url(url: str) -> str:
     """Normalize URL by removing fragments and converting to lowercase"""
@@ -71,32 +72,100 @@ def extract_youtube_id(url: str) -> Optional[str]:
     return None
 
 def get_youtube_transcript(url: str) -> Optional[Dict[str, str]]:
-    """Get YouTube video transcript"""
+    """Get YouTube video transcript using Apify API"""
     video_id = extract_youtube_id(url)
     if not video_id:
         print(f"Could not extract video ID from URL: {url}")
         return None
     
+    if not APIFY_API_TOKEN:
+        print("⚠ APIFY_API_TOKEN not set, skipping transcript")
+        # Return basic info without transcript
+        try:
+            headers = {'User-Agent': 'AI-News-Summarizer/1.0'}
+            response = requests.get(url, headers=headers, timeout=10)
+            title_match = re.search(r'<title[^>]*>([^<]+)</title>', response.text, re.IGNORECASE)
+            title = title_match.group(1).strip() if title_match else f"YouTube Video {video_id}"
+            return {
+                'url': url,
+                'title': title,
+                'text': '[VIDEO - No transcript available]'
+            }
+        except:
+            return None
+    
     try:
-        # Get video title from URL first
+        # Get video title first
         headers = {'User-Agent': 'AI-News-Summarizer/1.0'}
         response = requests.get(url, headers=headers, timeout=10)
         title_match = re.search(r'<title[^>]*>([^<]+)</title>', response.text, re.IGNORECASE)
         title = title_match.group(1).strip() if title_match else f"YouTube Video {video_id}"
         
-        # Try to get transcript
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-        transcript_text = ' '.join([item['text'] for item in transcript_list])
+        print(f"🎬 Fetching transcript for: {title}")
         
-        print(f"✓ Got transcript for video: {title}")
+        # Call Apify actor to get transcript
+        apify_url = f"https://api.apify.com/v2/acts/pintostudio~youtube-transcript-scraper/runs?token={APIFY_API_TOKEN}"
+        apify_payload = {
+            "videoUrl": url
+        }
         
+        # Start the actor run
+        run_response = requests.post(
+            apify_url,
+            json=apify_payload,
+            headers={'Content-Type': 'application/json'},
+            timeout=30
+        )
+        run_response.raise_for_status()
+        run_data = run_response.json()
+        
+        # Get run ID and dataset ID
+        run_id = run_data['data']['id']
+        dataset_id = run_data['data']['defaultDatasetId']
+        
+        # Poll for completion (with timeout)
+        max_wait = 60  # seconds
+        waited = 0
+        while waited < max_wait:
+            status_url = f"https://api.apify.com/v2/actor-runs/{run_id}?token={APIFY_API_TOKEN}"
+            status_response = requests.get(status_url, timeout=10)
+            status_data = status_response.json()
+            
+            if status_data['data']['status'] in ['SUCCEEDED', 'FAILED', 'ABORTED']:
+                break
+            
+            time.sleep(2)
+            waited += 2
+        
+        # Get the dataset results if succeeded
+        if status_data['data']['status'] == 'SUCCEEDED':
+            dataset_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?token={APIFY_API_TOKEN}"
+            dataset_response = requests.get(dataset_url, timeout=10)
+            dataset_items = dataset_response.json()
+            
+            if dataset_items and len(dataset_items) > 0:
+                # Extract transcript from the result
+                transcript_data = dataset_items[0]
+                transcript_text = transcript_data.get('transcript', '')
+                
+                if transcript_text:
+                    print(f"✓ Got transcript for video: {title}")
+                    return {
+                        'url': url,
+                        'title': title,
+                        'text': f"[VIDEO TRANSCRIPT] {transcript_text[:2000]}"
+                    }
+        
+        # If we get here, transcript fetch failed
+        print(f"⚠ Could not get transcript for {url}")
         return {
             'url': url,
             'title': title,
-            'text': f"[VIDEO TRANSCRIPT] {transcript_text[:2000]}"  # Limit transcript length
+            'text': '[VIDEO - No transcript available]'
         }
+        
     except Exception as e:
-        print(f"⚠ Could not get transcript for {url}: {e}")
+        print(f"⚠ Error fetching transcript for {url}: {e}")
         # Return basic info even without transcript
         try:
             headers = {'User-Agent': 'AI-News-Summarizer/1.0'}
@@ -362,4 +431,5 @@ if __name__ == '__main__':
     print('  - SUMMARY_CHANNEL_ID')
     print('  - CHANNEL_IDS (comma-separated)')
     print('  - GOOGLE_API_KEY')
+    print('  - APIFY_API_TOKEN')
     app.run(host='0.0.0.0', port=8000, debug=True)

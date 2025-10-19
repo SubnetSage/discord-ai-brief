@@ -31,6 +31,7 @@ serve(async (req) => {
     const SUMMARY_CHANNEL_ID = Deno.env.get('SUMMARY_CHANNEL_ID');
     const CHANNEL_IDS = Deno.env.get('CHANNEL_IDS');
     const GOOGLE_API_KEY = Deno.env.get('GOOGLE_API_KEY');
+    const APIFY_API_TOKEN = Deno.env.get('APIFY_API_TOKEN');
 
     if (!DISCORD_TOKEN || !SUMMARY_CHANNEL_ID || !CHANNEL_IDS || !GOOGLE_API_KEY) {
       throw new Error('Missing required environment variables');
@@ -215,60 +216,109 @@ async function getYouTubeTranscript(url: string): Promise<ArticleData | null> {
     return null;
   }
 
+  const APIFY_API_TOKEN = Deno.env.get('APIFY_API_TOKEN');
+  
+  if (!APIFY_API_TOKEN) {
+    console.log("⚠ APIFY_API_TOKEN not set, skipping transcript");
+    // Return basic info without transcript
+    try {
+      const response = await fetch(url);
+      const html = await response.text();
+      const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+      const title = titleMatch ? titleMatch[1].trim() : `YouTube Video ${videoId}`;
+      return {
+        url,
+        title,
+        text: '[VIDEO - No transcript available]'
+      };
+    } catch {
+      return null;
+    }
+  }
+
   try {
-    // Fetch video page to get title first
+    // Get video title first
     const response = await fetch(url);
     const html = await response.text();
     const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
     const title = titleMatch ? titleMatch[1].trim() : `YouTube Video ${videoId}`;
 
-    // Fetch transcript using YouTube's API
-    const transcriptUrl = `https://www.youtube.com/api/timedtext?lang=en&v=${videoId}`;
-    const transcriptResponse = await fetch(transcriptUrl);
-    
-    if (!transcriptResponse.ok) {
-      console.log(`⚠ No transcript available for video ${videoId}`);
-      // Return basic info even without transcript
-      return {
-        url,
-        title,
-        text: '[VIDEO - No transcript available]'
-      };
+    console.log(`🎬 Fetching transcript for: ${title}`);
+
+    // Call Apify actor to get transcript
+    const apifyUrl = `https://api.apify.com/v2/acts/pintostudio~youtube-transcript-scraper/runs?token=${APIFY_API_TOKEN}`;
+    const apifyPayload = {
+      videoUrl: url
+    };
+
+    // Start the actor run
+    const runResponse = await fetch(apifyUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(apifyPayload),
+    });
+
+    if (!runResponse.ok) {
+      throw new Error(`Apify API error: ${runResponse.status}`);
     }
 
-    const transcriptXml = await transcriptResponse.text();
-    
-    // Parse XML transcript
-    const textMatches = transcriptXml.matchAll(/<text[^>]*>([^<]+)<\/text>/g);
-    let transcriptText = '';
-    for (const match of textMatches) {
-      const decodedText = match[1]
-        .replace(/&amp;#39;/g, "'")
-        .replace(/&amp;quot;/g, '"')
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>');
-      transcriptText += decodedText + ' ';
+    const runData = await runResponse.json();
+    const runId = runData.data.id;
+    const datasetId = runData.data.defaultDatasetId;
+
+    // Poll for completion (with timeout)
+    const maxWait = 60; // seconds
+    let waited = 0;
+    let status = '';
+
+    while (waited < maxWait) {
+      const statusUrl = `https://api.apify.com/v2/actor-runs/${runId}?token=${APIFY_API_TOKEN}`;
+      const statusResponse = await fetch(statusUrl);
+      const statusData = await statusResponse.json();
+      status = statusData.data.status;
+
+      if (['SUCCEEDED', 'FAILED', 'ABORTED'].includes(status)) {
+        break;
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      waited += 2;
     }
 
-    if (!transcriptText.trim()) {
-      return {
-        url,
-        title,
-        text: '[VIDEO - No transcript available]'
-      };
+    // Get the dataset results if succeeded
+    if (status === 'SUCCEEDED') {
+      const datasetUrl = `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_TOKEN}`;
+      const datasetResponse = await fetch(datasetUrl);
+      const datasetItems = await datasetResponse.json();
+
+      if (datasetItems && datasetItems.length > 0) {
+        const transcriptData = datasetItems[0];
+        const transcriptText = transcriptData.transcript || '';
+
+        if (transcriptText) {
+          console.log(`✓ Got transcript for video: ${title}`);
+          return {
+            url,
+            title,
+            text: `[VIDEO TRANSCRIPT] ${transcriptText.slice(0, 2000)}`
+          };
+        }
+      }
     }
 
-    console.log(`✓ Got transcript for video: ${title}`);
-
+    // If we get here, transcript fetch failed
+    console.log(`⚠ Could not get transcript for ${url}`);
     return {
       url,
       title,
-      text: `[VIDEO TRANSCRIPT] ${transcriptText.slice(0, 2000)}` // Limit length
+      text: '[VIDEO - No transcript available]'
     };
+
   } catch (error) {
-    console.error(`⚠ Error getting YouTube transcript for ${url}:`, error);
-    // Return basic info even on error
+    console.error(`⚠ Error fetching transcript for ${url}:`, error);
+    // Return basic info even without transcript
     try {
       const response = await fetch(url);
       const html = await response.text();
