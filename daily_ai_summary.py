@@ -7,7 +7,7 @@ Fetches links from Discord channels, scrapes articles, and generates AI summarie
 import os
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 from urllib.parse import urlparse
 import requests
@@ -189,10 +189,10 @@ def generate_summary_endpoint():
             return jsonify({'error': 'Missing required environment variables'}), 500
         
         # Get today's date range (America/Chicago timezone)
-        now = datetime.now()
         # Chicago is UTC-6 (CST) or UTC-5 (CDT)
-        chicago_offset = timedelta(hours=-6)
-        chicago_now = now + chicago_offset
+        chicago_tz = timezone(timedelta(hours=-6))
+        now = datetime.now(timezone.utc)
+        chicago_now = now.astimezone(chicago_tz)
         start_of_day = chicago_now.replace(hour=0, minute=0, second=0, microsecond=0)
         end_of_day = chicago_now.replace(hour=23, minute=59, second=59, microsecond=999999)
         
@@ -215,7 +215,7 @@ def generate_summary_endpoint():
             for message in messages:
                 message_time = datetime.fromisoformat(message['timestamp'].replace('Z', '+00:00'))
                 # Convert to Chicago time
-                message_time_chicago = message_time + chicago_offset
+                message_time_chicago = message_time.astimezone(chicago_tz)
                 
                 if start_of_day <= message_time_chicago <= end_of_day:
                     # Extract URLs from message content
