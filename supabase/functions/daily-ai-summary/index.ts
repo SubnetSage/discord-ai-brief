@@ -31,7 +31,6 @@ serve(async (req) => {
     const SUMMARY_CHANNEL_ID = Deno.env.get('SUMMARY_CHANNEL_ID');
     const CHANNEL_IDS = Deno.env.get('CHANNEL_IDS');
     const GOOGLE_API_KEY = Deno.env.get('GOOGLE_API_KEY');
-    const APIFY_API_TOKEN = Deno.env.get('APIFY_API_TOKEN');
 
     if (!DISCORD_TOKEN || !SUMMARY_CHANNEL_ID || !CHANNEL_IDS || !GOOGLE_API_KEY) {
       throw new Error('Missing required environment variables');
@@ -84,23 +83,11 @@ serve(async (req) => {
         if (messageTime >= startOfDay && messageTime <= endOfDay) {
           // Extract URLs from message content
           const contentUrls = message.content.match(urlRegex) || [];
-          contentUrls.forEach(url => {
-            const normalized = normalizeUrl(url);
-            // Skip reddit.com links
-            if (!normalized.includes('reddit.com')) {
-              allUrls.add(normalized);
-            }
-          });
+          contentUrls.forEach(url => allUrls.add(normalizeUrl(url)));
 
           // Extract URLs from embeds
           message.embeds.forEach(embed => {
-            if (embed.url) {
-              const normalized = normalizeUrl(embed.url);
-              // Skip reddit.com links
-              if (!normalized.includes('reddit.com')) {
-                allUrls.add(normalized);
-              }
-            }
+            if (embed.url) allUrls.add(normalizeUrl(embed.url));
           });
         }
       }
@@ -133,25 +120,6 @@ serve(async (req) => {
     }
 
     console.log(`Successfully scraped ${articles.length} articles`);
-
-    // Validate we have content before generating summary
-    if (articles.length === 0) {
-      const noContentMessage = `# Daily AI News — ${formatDate(new Date())}\n\n*No articles could be scraped from the ${allUrls.size} links found.*`;
-      await postToDiscord(discordAuth, SUMMARY_CHANNEL_ID, noContentMessage);
-      return new Response(
-        JSON.stringify({ success: true, linkCount: allUrls.size, articleCount: 0, message: 'No articles scraped' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // Debug: Show sample of what we're sending to AI
-    console.log('\n--- Scraped Articles Sample ---');
-    articles.slice(0, 3).forEach((article, i) => {
-      console.log(`${i+1}. ${article.title.substring(0, 60)}...`);
-      console.log(`   Content length: ${article.text.length} chars`);
-      console.log(`   Is video: ${article.text.includes('VIDEO TRANSCRIPT')}`);
-    });
-    console.log('--- End Sample ---\n');
 
     // Generate summary using Google Gemini
     console.log('Generating AI summary...');
@@ -195,161 +163,15 @@ function normalizeUrl(url: string): string {
   }
 }
 
-function extractYouTubeId(url: string): string | null {
-  try {
-    const parsed = new URL(url);
-    if (parsed.hostname.includes('youtube.com')) {
-      return parsed.searchParams.get('v');
-    } else if (parsed.hostname.includes('youtu.be')) {
-      return parsed.pathname.slice(1);
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-async function getYouTubeTranscript(url: string): Promise<ArticleData | null> {
-  const videoId = extractYouTubeId(url);
-  if (!videoId) {
-    console.log(`Could not extract video ID from URL: ${url}`);
-    return null;
-  }
-
-  const APIFY_API_TOKEN = Deno.env.get('APIFY_API_TOKEN');
-  
-  if (!APIFY_API_TOKEN) {
-    console.log("⚠ APIFY_API_TOKEN not set, skipping transcript");
-    // Return basic info without transcript
-    try {
-      const response = await fetch(url);
-      const html = await response.text();
-      const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-      const title = titleMatch ? titleMatch[1].trim() : `YouTube Video ${videoId}`;
-      return {
-        url,
-        title,
-        text: '[VIDEO - No transcript available]'
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  try {
-    // Get video title first
-    const response = await fetch(url);
-    const html = await response.text();
-    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-    const title = titleMatch ? titleMatch[1].trim() : `YouTube Video ${videoId}`;
-
-    console.log(`🎬 Fetching transcript for: ${title}`);
-
-    // Call Apify actor to get transcript
-    const apifyUrl = `https://api.apify.com/v2/acts/pintostudio~youtube-transcript-scraper/runs?token=${APIFY_API_TOKEN}`;
-    const apifyPayload = {
-      videoUrl: url
-    };
-
-    // Start the actor run
-    const runResponse = await fetch(apifyUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(apifyPayload),
-    });
-
-    if (!runResponse.ok) {
-      throw new Error(`Apify API error: ${runResponse.status}`);
-    }
-
-    const runData = await runResponse.json();
-    const runId = runData.data.id;
-    const datasetId = runData.data.defaultDatasetId;
-
-    // Poll for completion (with timeout)
-    const maxWait = 60; // seconds
-    let waited = 0;
-    let status = '';
-
-    while (waited < maxWait) {
-      const statusUrl = `https://api.apify.com/v2/actor-runs/${runId}?token=${APIFY_API_TOKEN}`;
-      const statusResponse = await fetch(statusUrl);
-      const statusData = await statusResponse.json();
-      status = statusData.data.status;
-
-      if (['SUCCEEDED', 'FAILED', 'ABORTED'].includes(status)) {
-        break;
-      }
-
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      waited += 2;
-    }
-
-    // Get the dataset results if succeeded
-    if (status === 'SUCCEEDED') {
-      const datasetUrl = `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_TOKEN}`;
-      const datasetResponse = await fetch(datasetUrl);
-      const datasetItems = await datasetResponse.json();
-
-      if (datasetItems && datasetItems.length > 0) {
-        const transcriptData = datasetItems[0];
-        const transcriptText = transcriptData.transcript || '';
-
-        if (transcriptText) {
-          console.log(`✓ Got transcript for video: ${title}`);
-          return {
-            url,
-            title,
-            text: `[VIDEO TRANSCRIPT] ${transcriptText.slice(0, 2000)}`
-          };
-        }
-      }
-    }
-
-    // If we get here, transcript fetch failed
-    console.log(`⚠ Could not get transcript for ${url}`);
-    return {
-      url,
-      title,
-      text: '[VIDEO - No transcript available]'
-    };
-
-  } catch (error) {
-    console.error(`⚠ Error fetching transcript for ${url}:`, error);
-    // Return basic info even without transcript
-    try {
-      const response = await fetch(url);
-      const html = await response.text();
-      const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-      const title = titleMatch ? titleMatch[1].trim() : `YouTube Video ${videoId}`;
-      return {
-        url,
-        title,
-        text: '[VIDEO - No transcript available]'
-      };
-    } catch {
-      return null;
-    }
-  }
-}
-
 function formatDate(date: Date): string {
   return date.toISOString().split('T')[0]; // YYYY-MM-DD
 }
 
 async function scrapeArticle(url: string): Promise<ArticleData | null> {
   try {
+    // Skip non-article URLs
+    const skipDomains = ['youtube.com', 'youtu.be', 'twitter.com', 'x.com', 'imgur.com', 'giphy.com'];
     const urlObj = new URL(url);
-    
-    // Handle YouTube videos separately
-    if (urlObj.hostname.includes('youtube.com') || urlObj.hostname.includes('youtu.be')) {
-      return await getYouTubeTranscript(url);
-    }
-    
-    // Skip other non-article URLs
-    const skipDomains = ['twitter.com', 'x.com', 'imgur.com', 'giphy.com'];
     if (skipDomains.some(domain => urlObj.hostname.includes(domain))) {
       return null;
     }
@@ -382,26 +204,17 @@ async function scrapeArticle(url: string): Promise<ArticleData | null> {
 async function generateSummary(articles: ArticleData[], apiKey: string): Promise<string> {
   const date = formatDate(new Date());
   
-  // Validate articles have content
-  const validArticles = articles.filter(a => a.text && a.text.trim().length > 20);
-  
-  if (validArticles.length === 0) {
-    return `# Daily AI News — ${date}\n\n*No substantial content could be extracted from the articles found.*`;
-  }
-  
-  // Prepare article list with clear indication of content type
-  const articleList = validArticles.map((article, idx) => 
+  // Prepare article list
+  const articleList = articles.map((article, idx) => 
     `${idx + 1}. ${article.title}\nURL: ${article.url}\nContent: ${article.text.substring(0, 500)}`
   ).join('\n\n');
 
-  const prompt = `You are generating a daily AI news summary. Below are ${validArticles.length} articles and videos that were shared today.
+  const prompt = `You are an AI news curator. Generate a concise daily brief from these AI-related articles.
 
-IMPORTANT: You must immediately generate the summary in the specified format. Do not ask for more information.
-
-Articles and Videos:
+Articles:
 ${articleList}
 
-Generate a Markdown summary NOW with this exact structure:
+Create a Markdown summary with this exact structure:
 
 # Daily AI News — ${date} (America/Chicago)
 
@@ -417,13 +230,10 @@ Generate a Markdown summary NOW with this exact structure:
 ## Funding & Policy
 (Investments, regulations, policy changes)
 
-## Video Summaries
-(For videos with transcripts, provide a concise summary of the key points discussed)
-
 ## All Links
-(For each article/video: - **[Title](URL)**: One-line summary)
+(For each article: - **[Title](URL)**: One-line summary)
 
-Use concrete facts, no hype. Be specific about numbers, companies, and products. For video transcripts, provide a brief summary of the main topics discussed.`;
+Use concrete facts, no hype. Be specific about numbers, companies, and products.`;
 
   try {
     const response = await fetch(

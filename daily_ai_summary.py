@@ -9,12 +9,11 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
-import time
 
 # Load environment variables from .env file
 load_dotenv()
@@ -27,7 +26,6 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 SUMMARY_CHANNEL_ID = os.getenv('SUMMARY_CHANNEL_ID')
 CHANNEL_IDS = os.getenv('CHANNEL_IDS', '').split(',')
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-APIFY_API_TOKEN = os.getenv('APIFY_API_TOKEN')
 
 def normalize_url(url: str) -> str:
     """Normalize URL by removing fragments and converting to lowercase"""
@@ -61,135 +59,11 @@ def get_discord_messages(channel_id: str, token: str) -> List[Dict]:
         print(f"Error fetching messages from channel {channel_id}: {e}")
         return []
 
-def extract_youtube_id(url: str) -> Optional[str]:
-    """Extract YouTube video ID from URL"""
-    parsed = urlparse(url)
-    if 'youtube.com' in parsed.netloc:
-        query = parse_qs(parsed.query)
-        return query.get('v', [None])[0]
-    elif 'youtu.be' in parsed.netloc:
-        return parsed.path.lstrip('/')
-    return None
-
-def get_youtube_transcript(url: str) -> Optional[Dict[str, str]]:
-    """Get YouTube video transcript using Apify API"""
-    video_id = extract_youtube_id(url)
-    if not video_id:
-        print(f"Could not extract video ID from URL: {url}")
-        return None
-    
-    if not APIFY_API_TOKEN:
-        print("⚠ APIFY_API_TOKEN not set, skipping transcript")
-        # Return basic info without transcript
-        try:
-            headers = {'User-Agent': 'AI-News-Summarizer/1.0'}
-            response = requests.get(url, headers=headers, timeout=10)
-            title_match = re.search(r'<title[^>]*>([^<]+)</title>', response.text, re.IGNORECASE)
-            title = title_match.group(1).strip() if title_match else f"YouTube Video {video_id}"
-            return {
-                'url': url,
-                'title': title,
-                'text': '[VIDEO - No transcript available]'
-            }
-        except:
-            return None
-    
-    try:
-        # Get video title first
-        headers = {'User-Agent': 'AI-News-Summarizer/1.0'}
-        response = requests.get(url, headers=headers, timeout=10)
-        title_match = re.search(r'<title[^>]*>([^<]+)</title>', response.text, re.IGNORECASE)
-        title = title_match.group(1).strip() if title_match else f"YouTube Video {video_id}"
-        
-        print(f"🎬 Fetching transcript for: {title}")
-        
-        # Call Apify actor to get transcript
-        apify_url = f"https://api.apify.com/v2/acts/pintostudio~youtube-transcript-scraper/runs?token={APIFY_API_TOKEN}"
-        apify_payload = {
-            "videoUrl": url
-        }
-        
-        # Start the actor run
-        run_response = requests.post(
-            apify_url,
-            json=apify_payload,
-            headers={'Content-Type': 'application/json'},
-            timeout=30
-        )
-        run_response.raise_for_status()
-        run_data = run_response.json()
-        
-        # Get run ID and dataset ID
-        run_id = run_data['data']['id']
-        dataset_id = run_data['data']['defaultDatasetId']
-        
-        # Poll for completion (with timeout)
-        max_wait = 60  # seconds
-        waited = 0
-        while waited < max_wait:
-            status_url = f"https://api.apify.com/v2/actor-runs/{run_id}?token={APIFY_API_TOKEN}"
-            status_response = requests.get(status_url, timeout=10)
-            status_data = status_response.json()
-            
-            if status_data['data']['status'] in ['SUCCEEDED', 'FAILED', 'ABORTED']:
-                break
-            
-            time.sleep(2)
-            waited += 2
-        
-        # Get the dataset results if succeeded
-        if status_data['data']['status'] == 'SUCCEEDED':
-            dataset_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?token={APIFY_API_TOKEN}"
-            dataset_response = requests.get(dataset_url, timeout=10)
-            dataset_items = dataset_response.json()
-            
-            if dataset_items and len(dataset_items) > 0:
-                # Extract transcript from the result
-                transcript_data = dataset_items[0]
-                transcript_text = transcript_data.get('transcript', '')
-                
-                if transcript_text:
-                    print(f"✓ Got transcript for video: {title}")
-                    return {
-                        'url': url,
-                        'title': title,
-                        'text': f"[VIDEO TRANSCRIPT] {transcript_text[:2000]}"
-                    }
-        
-        # If we get here, transcript fetch failed
-        print(f"⚠ Could not get transcript for {url}")
-        return {
-            'url': url,
-            'title': title,
-            'text': '[VIDEO - No transcript available]'
-        }
-        
-    except Exception as e:
-        print(f"⚠ Error fetching transcript for {url}: {e}")
-        # Return basic info even without transcript
-        try:
-            headers = {'User-Agent': 'AI-News-Summarizer/1.0'}
-            response = requests.get(url, headers=headers, timeout=10)
-            title_match = re.search(r'<title[^>]*>([^<]+)</title>', response.text, re.IGNORECASE)
-            title = title_match.group(1).strip() if title_match else f"YouTube Video {video_id}"
-            return {
-                'url': url,
-                'title': title,
-                'text': '[VIDEO - No transcript available]'
-            }
-        except:
-            return None
-
 def scrape_article(url: str) -> Optional[Dict[str, str]]:
     """Scrape article content from URL"""
+    # Skip non-article domains
+    skip_domains = ['youtube.com', 'youtu.be', 'twitter.com', 'x.com', 'imgur.com', 'giphy.com']
     parsed = urlparse(url)
-    
-    # Handle YouTube videos separately
-    if 'youtube.com' in parsed.netloc or 'youtu.be' in parsed.netloc:
-        return get_youtube_transcript(url)
-    
-    # Skip other non-article domains
-    skip_domains = ['twitter.com', 'x.com', 'imgur.com', 'giphy.com']
     if any(domain in parsed.netloc for domain in skip_domains):
         return None
     
@@ -219,26 +93,18 @@ def generate_summary(articles: List[Dict[str, str]], api_key: str) -> str:
     """Generate AI summary using Google Gemini"""
     date = format_date(datetime.now())
     
-    # Validate articles have content
-    valid_articles = [a for a in articles if a.get('text') and len(a['text'].strip()) > 20]
-    
-    if not valid_articles:
-        return f"# Daily AI News — {date}\n\n*No substantial content could be extracted from the articles found.*"
-    
-    # Prepare article list with clear indication of content type
+    # Prepare article list
     article_list = '\n\n'.join([
         f"{i+1}. {article['title']}\nURL: {article['url']}\nContent: {article['text'][:500]}"
-        for i, article in enumerate(valid_articles)
+        for i, article in enumerate(articles)
     ])
     
-    prompt = f"""You are generating a daily AI news summary. Below are {len(valid_articles)} articles and videos that were shared today.
+    prompt = f"""You are an AI news curator. Generate a concise daily brief from these AI-related articles.
 
-IMPORTANT: You must immediately generate the summary in the specified format. Do not ask for more information.
-
-Articles and Videos:
+Articles:
 {article_list}
 
-Generate a Markdown summary NOW with this exact structure:
+Create a Markdown summary with this exact structure:
 
 # Daily AI News — {date} (America/Chicago)
 
@@ -254,13 +120,10 @@ Generate a Markdown summary NOW with this exact structure:
 ## Funding & Policy
 (Investments, regulations, policy changes)
 
-## Video Summaries
-(For videos with transcripts, provide a concise summary of the key points discussed)
-
 ## All Links
-(For each article/video: - **[Title](URL)**: One-line summary)
+(For each article: - **[Title](URL)**: One-line summary)
 
-Use concrete facts, no hype. Be specific about numbers, companies, and products. For video transcripts, provide a brief summary of the main topics discussed."""
+Use concrete facts, no hype. Be specific about numbers, companies, and products."""
     
     url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={api_key}'
     
@@ -358,18 +221,12 @@ def generate_summary_endpoint():
                     # Extract URLs from message content
                     content_urls = url_pattern.findall(message.get('content', ''))
                     for url in content_urls:
-                        normalized = normalize_url(url)
-                        # Skip reddit.com links
-                        if 'reddit.com' not in normalized:
-                            all_urls.add(normalized)
+                        all_urls.add(normalize_url(url))
                     
                     # Extract URLs from embeds
                     for embed in message.get('embeds', []):
                         if embed.get('url'):
-                            normalized = normalize_url(embed['url'])
-                            # Skip reddit.com links
-                            if 'reddit.com' not in normalized:
-                                all_urls.add(normalized)
+                            all_urls.add(normalize_url(embed['url']))
         
         print(f'Found {len(all_urls)} unique URLs')
         
@@ -387,20 +244,6 @@ def generate_summary_endpoint():
                 articles.append(article_data)
         
         print(f'Successfully scraped {len(articles)} articles')
-        
-        # Validate we have content before generating summary
-        if len(articles) == 0:
-            no_content_message = f"# Daily AI News — {format_date(datetime.now())}\n\n*No articles could be scraped from the {len(all_urls)} links found.*"
-            post_to_discord(DISCORD_TOKEN, SUMMARY_CHANNEL_ID, no_content_message)
-            return jsonify({'success': True, 'linksFound': len(all_urls), 'articlesScraped': 0, 'message': 'No articles scraped'}), 200
-        
-        # Debug: Show sample of what we're sending to AI
-        print(f'\n--- Scraped Articles Sample ---')
-        for i, article in enumerate(articles[:3]):
-            print(f"{i+1}. {article['title'][:60]}...")
-            print(f"   Content length: {len(article['text'])} chars")
-            print(f"   Is video: {'VIDEO TRANSCRIPT' in article['text']}")
-        print(f'--- End Sample ---\n')
         
         # Generate summary using Google Gemini
         print('Generating AI summary...')
@@ -431,5 +274,4 @@ if __name__ == '__main__':
     print('  - SUMMARY_CHANNEL_ID')
     print('  - CHANNEL_IDS (comma-separated)')
     print('  - GOOGLE_API_KEY')
-    print('  - APIFY_API_TOKEN')
     app.run(host='0.0.0.0', port=8000, debug=True)
