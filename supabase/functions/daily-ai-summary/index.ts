@@ -36,6 +36,10 @@ serve(async (req) => {
       throw new Error('Missing required environment variables');
     }
 
+    // Normalize Discord token (add Bot prefix if not present)
+    const discordAuth = DISCORD_TOKEN.startsWith('Bot ') ? DISCORD_TOKEN : `Bot ${DISCORD_TOKEN}`;
+    console.log('Discord auth configured:', discordAuth.substring(0, 15) + '...');
+
     const channelIds = CHANNEL_IDS.split(',').map(id => id.trim());
     console.log(`Scanning channels: ${channelIds.join(', ')}`);
 
@@ -59,7 +63,7 @@ serve(async (req) => {
         `https://discord.com/api/v10/channels/${channelId}/messages?limit=100`,
         {
           headers: {
-            'Authorization': `Bot ${DISCORD_TOKEN}`,
+            'Authorization': discordAuth,
             'Content-Type': 'application/json',
           },
         }
@@ -93,7 +97,7 @@ serve(async (req) => {
 
     if (allUrls.size === 0) {
       const noLinksMessage = `# Daily AI News — ${formatDate(new Date())}\n\n*No links found for today.*`;
-      await postToDiscord(DISCORD_TOKEN, SUMMARY_CHANNEL_ID, noLinksMessage);
+      await postToDiscord(discordAuth, SUMMARY_CHANNEL_ID, noLinksMessage);
       return new Response(
         JSON.stringify({ success: true, linkCount: 0, message: 'No links found' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -122,7 +126,7 @@ serve(async (req) => {
     const summary = await generateSummary(articles, GOOGLE_API_KEY);
 
     // Post to Discord
-    await postToDiscord(DISCORD_TOKEN, SUMMARY_CHANNEL_ID, summary);
+    await postToDiscord(discordAuth, SUMMARY_CHANNEL_ID, summary);
 
     // Save as markdown file
     const filename = `ai-news-${formatDate(new Date())}.md`;
