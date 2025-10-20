@@ -352,15 +352,11 @@ def generate_summary_endpoint():
         if not all([DISCORD_TOKEN, SUMMARY_CHANNEL_ID, CHANNEL_IDS, GOOGLE_API_KEY]):
             return jsonify({'error': 'Missing required environment variables'}), 500
         
-        # Get today's date range (America/Chicago timezone)
-        # Chicago is UTC-6 (CST) or UTC-5 (CDT)
-        chicago_tz = timezone(timedelta(hours=-6))
+        # Get date range - using last 48 hours to avoid timezone issues
         now = datetime.now(timezone.utc)
-        chicago_now = now.astimezone(chicago_tz)
-        start_of_day = chicago_now.replace(hour=0, minute=0, second=0, microsecond=0)
-        end_of_day = chicago_now.replace(hour=23, minute=59, second=59, microsecond=999999)
+        start_time = now - timedelta(hours=48)
         
-        print(f'Date range: {start_of_day} to {end_of_day}')
+        print(f'Fetching messages from last 48 hours: {start_time} to {now}')
         
         # Collect all URLs from messages
         all_urls = set()
@@ -375,17 +371,15 @@ def generate_summary_endpoint():
             messages = get_discord_messages(channel_id, DISCORD_TOKEN)
             print(f'Retrieved {len(messages)} messages from channel {channel_id}')
             
-            # Filter messages from today and extract URLs
-            today_messages = 0
+            # Filter messages from last 48 hours and extract URLs
+            recent_messages = 0
             for message in messages:
                 message_time = datetime.fromisoformat(message['timestamp'].replace('Z', '+00:00'))
-                # Convert to Chicago time
-                message_time_chicago = message_time.astimezone(chicago_tz)
                 
-                print(f'Message time (Chicago): {message_time_chicago}, In range: {start_of_day <= message_time_chicago <= end_of_day}')
+                print(f'Message time (UTC): {message_time}, In range: {message_time >= start_time}')
                 
-                if start_of_day <= message_time_chicago <= end_of_day:
-                    today_messages += 1
+                if message_time >= start_time:
+                    recent_messages += 1
                     # Extract URLs from message content
                     content_urls = url_pattern.findall(message.get('content', ''))
                     print(f'Found {len(content_urls)} URLs in message content: {content_urls}')
@@ -399,7 +393,7 @@ def generate_summary_endpoint():
                             print(f'Found URL in embed: {embed_url}')
                             all_urls.add(normalize_url(embed_url))
             
-            print(f'Found {today_messages} messages from today in channel {channel_id}')
+            print(f'Found {recent_messages} recent messages in channel {channel_id}')
         
         print(f'Found {len(all_urls)} unique URLs')
         
