@@ -341,6 +341,13 @@ def generate_summary_endpoint():
     try:
         print('Starting daily AI summary generation...')
         
+        # Log configuration (without sensitive data)
+        print(f'DISCORD_TOKEN: {"✓ Set" if DISCORD_TOKEN else "✗ Missing"}')
+        print(f'SUMMARY_CHANNEL_ID: {SUMMARY_CHANNEL_ID if SUMMARY_CHANNEL_ID else "✗ Missing"}')
+        print(f'CHANNEL_IDS: {CHANNEL_IDS if CHANNEL_IDS else "✗ Missing"}')
+        print(f'GOOGLE_API_KEY: {"✓ Set" if GOOGLE_API_KEY else "✗ Missing"}')
+        print(f'APIFY_API_TOKEN: {"✓ Set" if APIFY_API_TOKEN else "✗ Missing"}')
+        
         # Validate environment variables
         if not all([DISCORD_TOKEN, SUMMARY_CHANNEL_ID, CHANNEL_IDS, GOOGLE_API_KEY]):
             return jsonify({'error': 'Missing required environment variables'}), 500
@@ -369,21 +376,30 @@ def generate_summary_endpoint():
             print(f'Retrieved {len(messages)} messages from channel {channel_id}')
             
             # Filter messages from today and extract URLs
+            today_messages = 0
             for message in messages:
                 message_time = datetime.fromisoformat(message['timestamp'].replace('Z', '+00:00'))
                 # Convert to Chicago time
                 message_time_chicago = message_time.astimezone(chicago_tz)
                 
+                print(f'Message time (Chicago): {message_time_chicago}, In range: {start_of_day <= message_time_chicago <= end_of_day}')
+                
                 if start_of_day <= message_time_chicago <= end_of_day:
+                    today_messages += 1
                     # Extract URLs from message content
                     content_urls = url_pattern.findall(message.get('content', ''))
+                    print(f'Found {len(content_urls)} URLs in message content: {content_urls}')
                     for url in content_urls:
                         all_urls.add(normalize_url(url))
                     
                     # Extract URLs from embeds
                     for embed in message.get('embeds', []):
                         if embed.get('url'):
-                            all_urls.add(normalize_url(embed['url']))
+                            embed_url = embed['url']
+                            print(f'Found URL in embed: {embed_url}')
+                            all_urls.add(normalize_url(embed_url))
+            
+            print(f'Found {today_messages} messages from today in channel {channel_id}')
         
         print(f'Found {len(all_urls)} unique URLs')
         
